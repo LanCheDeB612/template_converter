@@ -10,6 +10,8 @@ class ConversionRequest:
 
     input_file: Path
     output_directory: Path
+    template_type: str = "DDS"
+    output_filename: str | None = None
 
 
 @dataclass(frozen=True)
@@ -30,3 +32,5 @@ class ConversionResult:
     success: bool
     output_file: Path | None = None
     issues: tuple[ConversionIssue, ...] = field(default_factory=tuple)
+    node_count: int = 0
+    matrix_count: int = 0

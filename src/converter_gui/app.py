@@ -1,10 +1,15 @@
 """模板转换工具桌面入口。"""
 
 from pathlib import Path
+from queue import Empty, Queue
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import ttkbootstrap as ttk
+
+from converter_core.contracts import ConversionRequest, ConversionResult
+from converter_core.output import normalise_output_filename
+from converter_gui.worker import ConversionWorker, WorkerMessage
 
 TEMPLATE_TYPES = ("DDS", "SOME/IP", "路由")
 
@@ -17,13 +22,17 @@ class TemplateConverterApp:
         self.template_type = tk.StringVar(value=TEMPLATE_TYPES[0])
         self.input_path = tk.StringVar()
         self.output_path = tk.StringVar()
+        self.output_name = tk.StringVar()
         self.status_text = tk.StringVar(value="请选择待转换的 DDS 模板文件")
         self.result_text = tk.StringVar(value="尚未开始转换")
+        self.worker_messages: Queue[WorkerMessage] = Queue()
+        self.worker = ConversionWorker(self.worker_messages)
 
         self._build_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_layout(self) -> None:
-        """创建类型、路径、执行进度和结果区域。"""
+        """创建类型、路径、输出文件名和结果区域。"""
         content = ttk.Frame(self.root, padding=(28, 24, 28, 20))
         content.pack(fill="both", expand=True)
         content.columnconfigure(1, weight=1)
@@ -60,13 +69,14 @@ class TemplateConverterApp:
             state="readonly",
             bootstyle="primary",
         ).grid(row=1, column=1, sticky="ew", pady=8)
-        ttk.Button(
+        self.input_button = ttk.Button(
             config_frame,
             text="选择文件…",
             width=11,
             command=self._browse_input,
             bootstyle="primary",
-        ).grid(row=1, column=2, padx=(12, 0), pady=8)
+        )
+        self.input_button.grid(row=1, column=2, padx=(12, 0), pady=8)
 
         ttk.Label(config_frame, text="输出目录", font=("TkDefaultFont", 11)).grid(
             row=2, column=0, sticky="e", padx=(0, 14), pady=8
@@ -77,39 +87,42 @@ class TemplateConverterApp:
             state="readonly",
             bootstyle="primary",
         ).grid(row=2, column=1, sticky="ew", pady=8)
-        ttk.Button(
+        self.output_button = ttk.Button(
             config_frame,
             text="选择目录…",
             width=11,
             command=self._browse_output,
             bootstyle="primary-outline",
-        ).grid(row=2, column=2, padx=(12, 0), pady=8)
+        )
+        self.output_button.grid(row=2, column=2, padx=(12, 0), pady=8)
+
+        ttk.Label(config_frame, text="输出文件名", font=("TkDefaultFont", 11)).grid(
+            row=3, column=0, sticky="e", padx=(0, 14), pady=8
+        )
+        self.output_name_entry = ttk.Entry(
+            config_frame,
+            textvariable=self.output_name,
+            bootstyle="primary",
+        )
+        self.output_name_entry.grid(row=3, column=1, columnspan=2, sticky="ew", pady=8)
 
         ttk.Label(
             config_frame,
-            text="仅支持 .xlsx 文件，文件路径通过按钮选择",
+            text="仅支持 .xlsx 文件；输出文件名可省略后缀，重名时自动增加数字",
             bootstyle="secondary",
-        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(2, 0))
 
-        ttk.Button(
+        self.start_button = ttk.Button(
             content,
             text="开始转换",
             width=20,
             command=self._start_conversion,
             bootstyle="success",
-        ).grid(row=1, column=0, columnspan=3, pady=(22, 16))
-
-        self.progress = ttk.Progressbar(
-            content,
-            mode="determinate",
-            maximum=100,
-            value=0,
-            bootstyle="success-striped",
         )
-        self.progress.grid(row=2, column=0, columnspan=3, sticky="ew")
+        self.start_button.grid(row=1, column=0, columnspan=3, pady=(22, 16))
 
         status_frame = ttk.Frame(content)
-        status_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        status_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(2, 0))
         status_frame.columnconfigure(0, weight=1)
         ttk.Label(
             status_frame,
@@ -127,7 +140,6 @@ class TemplateConverterApp:
         selected_type = self.template_type.get()
         self.status_text.set(f"请选择待转换的 {selected_type} 模板文件")
         self.result_text.set("尚未开始转换")
-        self.progress.configure(value=0)
         self.root.after_idle(self._clear_type_selection)
 
     def _clear_type_selection(self) -> None:
@@ -144,8 +156,13 @@ class TemplateConverterApp:
             filetypes=(("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")),
         )
         if selected:
-            self.input_path.set(selected)
-            self.status_text.set("已选择输入文件，请确认输出目录")
+            selected_path = Path(selected)
+            self.input_path.set(str(selected_path))
+            # 默认把结果保存在输入文件旁边，用户仍可通过“选择目录”覆盖。
+            self.output_path.set(str(selected_path.parent))
+            if not self.output_name.get().strip():
+                self.output_name.set(f"{selected_path.stem}_DDS通信矩阵.xlsx")
+            self.status_text.set("已自动使用输入文件所在目录，可按需修改")
 
     def _browse_output(self) -> None:
         """选择转换结果的保存目录。"""
@@ -155,10 +172,11 @@ class TemplateConverterApp:
             self.status_text.set("路径已准备，可以开始转换")
 
     def _start_conversion(self) -> None:
-        """校验用户输入，并说明当前阶段的功能边界。"""
+        """校验用户输入，并启动不会阻塞界面的后台转换任务。"""
         selected_type = self.template_type.get()
         input_file = Path(self.input_path.get()) if self.input_path.get() else None
         output_dir = Path(self.output_path.get()) if self.output_path.get() else None
+        output_filename = self.output_name.get().strip() or None
 
         if input_file is None:
             messagebox.showwarning(
@@ -176,16 +194,102 @@ class TemplateConverterApp:
         if not output_dir.is_dir():
             messagebox.showerror("输出目录无效", "请选择有效的输出目录。", parent=self.root)
             return
+        try:
+            output_filename = normalise_output_filename(output_filename)
+        except ValueError as error:
+            messagebox.showerror("输出文件名无效", str(error), parent=self.root)
+            self.output_name_entry.focus_set()
+            return
 
-        # 初始化阶段只验证界面输入，避免在转换核心接入前产生伪成功结果。
-        self.progress.configure(value=0)
-        self.status_text.set(f"路径校验通过，{selected_type} 转换核心尚未接入。")
+        if selected_type != "DDS":
+            messagebox.showinfo(
+                "功能开发中",
+                f"{selected_type} 转换功能尚未实现。",
+                parent=self.root,
+            )
+            return
+
+        self.status_text.set("转换任务已启动")
+        self.result_text.set("正在处理")
+        self._set_controls_enabled(False)
+        self.worker.start(
+            ConversionRequest(
+                input_file=input_file,
+                output_directory=output_dir,
+                template_type=selected_type,
+                output_filename=output_filename,
+            )
+        )
+        self.root.after(80, self._poll_worker)
+
+    def _poll_worker(self) -> None:
+        """只在 Tkinter 主线程更新控件，避免后台线程直接操作界面。"""
+        complete = False
+        while True:
+            try:
+                message = self.worker_messages.get_nowait()
+            except Empty:
+                break
+            if message.kind == "progress":
+                self.status_text.set(message.text)
+            elif message.kind == "complete" and message.result is not None:
+                complete = True
+                self._show_result(message.result)
+        # complete 消息在线程退出前入队；即使恰好发生在线程状态切换瞬间，
+        # 再轮询一次也能取到最终结果，不会让界面永久停留在“正在处理”。
+        if not complete:
+            self.root.after(80, self._poll_worker)
+
+    def _show_result(self, result: ConversionResult) -> None:
+        """展示转换数量、输出路径或能够定位到客户 Sheet 的问题。"""
+        self._set_controls_enabled(True)
+        if result.success and result.output_file is not None:
+            self.status_text.set("DDS 转换完成")
+            self.result_text.set(f"节点 {result.node_count}，通信记录 {result.matrix_count}")
+            messagebox.showinfo(
+                "转换完成",
+                f"已生成：\n{result.output_file}\n\n节点：{result.node_count}\n通信记录：{result.matrix_count}",
+                parent=self.root,
+            )
+            return
+
+        self.status_text.set("DDS 转换失败")
         self.result_text.set("未生成文件")
-        messagebox.showinfo(
-            "功能开发中",
-            f"输入和输出路径校验已通过。\n{selected_type} 转换核心尚未接入。",
+        details = []
+        for issue in result.issues:
+            location = " / ".join(
+                part
+                for part in (
+                    issue.sheet,
+                    f"第 {issue.row} 行" if issue.row is not None else None,
+                    issue.column,
+                )
+                if part
+            )
+            details.append(f"{location + '：' if location else ''}{issue.message}")
+        messagebox.showerror(
+            "转换失败",
+            "\n".join(details) if details else "转换失败，未生成文件。",
             parent=self.root,
         )
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.input_button.configure(state=state)
+        self.output_button.configure(state=state)
+        self.start_button.configure(state=state)
+        self.output_name_entry.configure(state=state)
+        self.type_box.configure(state="readonly" if enabled else "disabled")
+
+    def _on_close(self) -> None:
+        """转换仍在执行时提示用户，避免误以为关闭窗口等同于正常完成。"""
+        if self.worker.is_running and not messagebox.askyesno(
+            "转换仍在执行",
+            "转换尚未完成，确定要关闭程序吗？",
+            parent=self.root,
+        ):
+            return
+        self.root.destroy()
 
 
 def _center_window(root: tk.Tk, width: int, height: int) -> None:
@@ -201,10 +305,10 @@ def build_app() -> tk.Tk:
     # 禁用 ttkbootstrap 的彩色圆点图标，保留 Tkinter 原生默认程序图标。
     root = ttk.Window(themename="flatly", iconphoto=None)
     root.title("模板转换工具")
-    root.minsize(680, 380)
+    root.minsize(680, 400)
     root.resizable(True, False)
     TemplateConverterApp(root)
-    _center_window(root, 760, 380)
+    _center_window(root, 760, 400)
     return root
 
 
