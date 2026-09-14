@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Python cache and virtual environment
+__pycache__/
+*.py[cod]
+.venv/
+
+# Test and analysis cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and package output
+build/
+dist/
+*.spec.bak
+
+# Runtime output
+logs/
+*.log
+*.tmp
+~$*.xlsx
+
+# IDE settings
+.idea/
+.vscode/
+
+# Local design and requirement documents
+doc/

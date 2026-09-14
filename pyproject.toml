@@ -1,0 +1,29 @@
+[project]
+name = "template-converter"
+version = "0.1.0"
+description = "Convert customer Excel files into Polelink standard templates"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "openpyxl==3.1.5",
+    "ttkbootstrap==1.20.3",
+]
+
+[project.gui-scripts]
+template-converter = "converter_gui.app:main"
+
+[dependency-groups]
+dev = [
+    "pyinstaller==6.22.3",
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/converter_core", "src/converter_gui"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
