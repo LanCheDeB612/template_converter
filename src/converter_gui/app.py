@@ -1,5 +1,6 @@
 """模板转换工具桌面入口。"""
 
+from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 import tkinter as tk
@@ -23,8 +24,6 @@ class TemplateConverterApp:
         self.input_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.output_name = tk.StringVar()
-        self.status_text = tk.StringVar(value="请选择待转换的 DDS 模板文件")
-        self.result_text = tk.StringVar(value="尚未开始转换")
         self.worker_messages: Queue[WorkerMessage] = Queue()
         self.worker = ConversionWorker(self.worker_messages)
 
@@ -36,6 +35,7 @@ class TemplateConverterApp:
         content = ttk.Frame(self.root, padding=(28, 24, 28, 20))
         content.pack(fill="both", expand=True)
         content.columnconfigure(1, weight=1)
+        content.rowconfigure(2, weight=1)
 
         config_frame = ttk.Labelframe(
             content,
@@ -121,25 +121,57 @@ class TemplateConverterApp:
         )
         self.start_button.grid(row=1, column=0, columnspan=3, pady=(22, 16))
 
-        status_frame = ttk.Frame(content)
-        status_frame.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(2, 0))
-        status_frame.columnconfigure(0, weight=1)
-        ttk.Label(
-            status_frame,
-            textvariable=self.status_text,
-            bootstyle="secondary",
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            status_frame,
-            textvariable=self.result_text,
-            bootstyle="secondary",
-        ).grid(row=0, column=1, sticky="e")
+        progress_frame = ttk.Labelframe(
+            content,
+            text="转换进度",
+            padding=(20, 14),
+            bootstyle="primary",
+        )
+        progress_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(2, 0))
+        progress_frame.columnconfigure(0, weight=1)
+        progress_frame.rowconfigure(1, weight=1)
+
+        log_header = ttk.Frame(progress_frame)
+        log_header.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(log_header, text="运行日志", font=("TkDefaultFont", 11)).grid(
+            row=0, column=0, sticky="w"
+        )
+
+        self.log_frame = ttk.Frame(progress_frame)
+        self.log_frame.grid(row=1, column=0, sticky="nsew")
+        self.log_frame.columnconfigure(0, weight=1)
+        self.log_frame.rowconfigure(0, weight=1)
+        self.log_text = tk.Text(
+            self.log_frame,
+            height=7,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            borderwidth=0,
+            padx=10,
+            pady=8,
+            font=("TkDefaultFont", 10),
+            foreground="#2c3e50",
+            background="#f1f4f5",
+            highlightthickness=1,
+            highlightbackground="#2c3e50",
+            highlightcolor="#2c3e50",
+        )
+        log_scrollbar = ttk.Scrollbar(
+            self.log_frame,
+            orient="vertical",
+            command=self.log_text.yview,
+            bootstyle="primary",
+        )
+        self.log_text.configure(yscrollcommand=log_scrollbar.set)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+        log_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log_text.tag_configure("error", foreground="#c0392b")
+        self.log_text.tag_configure("warning", foreground="#b9770e")
+        self.log_text.tag_configure("success", foreground="#148f77")
 
     def _on_type_selected(self, _event: tk.Event) -> None:
-        """根据下拉框选择更新当前转换提示。"""
-        selected_type = self.template_type.get()
-        self.status_text.set(f"请选择待转换的 {selected_type} 模板文件")
-        self.result_text.set("尚未开始转换")
+        """选择模板类型后清除只读下拉框的文字选中背景。"""
         self.root.after_idle(self._clear_type_selection)
 
     def _clear_type_selection(self) -> None:
@@ -162,14 +194,15 @@ class TemplateConverterApp:
             self.output_path.set(str(selected_path.parent))
             if not self.output_name.get().strip():
                 self.output_name.set(f"{selected_path.stem}_DDS通信矩阵.xlsx")
-            self.status_text.set("已自动使用输入文件所在目录，可按需修改")
+            self._append_log(f"已选择输入文件：{selected_path}")
+            self._append_log(f"已自动设置输出目录：{selected_path.parent}")
 
     def _browse_output(self) -> None:
         """选择转换结果的保存目录。"""
         selected = filedialog.askdirectory(parent=self.root, title="选择输出目录")
         if selected:
             self.output_path.set(selected)
-            self.status_text.set("路径已准备，可以开始转换")
+            self._append_log(f"已选择输出目录：{selected}")
 
     def _start_conversion(self) -> None:
         """校验用户输入，并启动不会阻塞界面的后台转换任务。"""
@@ -209,8 +242,8 @@ class TemplateConverterApp:
             )
             return
 
-        self.status_text.set("转换任务已启动")
-        self.result_text.set("正在处理")
+        self._clear_log()
+        self._append_log(f"开始转换：{input_file.name}")
         self._set_controls_enabled(False)
         self.worker.start(
             ConversionRequest(
@@ -231,7 +264,7 @@ class TemplateConverterApp:
             except Empty:
                 break
             if message.kind == "progress":
-                self.status_text.set(message.text)
+                self._append_log(f"[{message.progress}%] {message.text}")
             elif message.kind == "complete" and message.result is not None:
                 complete = True
                 self._show_result(message.result)
@@ -244,8 +277,11 @@ class TemplateConverterApp:
         """展示转换数量、输出路径或能够定位到客户 Sheet 的问题。"""
         self._set_controls_enabled(True)
         if result.success and result.output_file is not None:
-            self.status_text.set("DDS 转换完成")
-            self.result_text.set(f"节点 {result.node_count}，通信记录 {result.matrix_count}")
+            self._append_log(
+                f"转换完成：节点 {result.node_count}，通信记录 {result.matrix_count}",
+                "success",
+            )
+            self._append_log(f"输出文件：{result.output_file}", "success")
             messagebox.showinfo(
                 "转换完成",
                 f"已生成：\n{result.output_file}\n\n节点：{result.node_count}\n通信记录：{result.matrix_count}",
@@ -253,8 +289,6 @@ class TemplateConverterApp:
             )
             return
 
-        self.status_text.set("DDS 转换失败")
-        self.result_text.set("未生成文件")
         details = []
         for issue in result.issues:
             location = " / ".join(
@@ -266,18 +300,33 @@ class TemplateConverterApp:
                 )
                 if part
             )
-            details.append(f"{location + '：' if location else ''}{issue.message}")
+            detail = f"{location + '：' if location else ''}{issue.message}"
+            details.append(detail)
+            self._append_log(detail, "warning" if issue.level == "warning" else "error")
         messagebox.showerror(
             "转换失败",
             "\n".join(details) if details else "转换失败，未生成文件。",
             parent=self.root,
         )
 
+    def _append_log(self, message: str, tag: str | None = None) -> None:
+        """将带时间的转换阶段或问题写入只读日志，并保持最新消息可见。"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", f"[{timestamp}] {message}\n", tag or ())
+        self.log_text.configure(state="disabled")
+        self.log_text.see("end")
+
+    def _clear_log(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
     def _set_controls_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
         self.input_button.configure(state=state)
         self.output_button.configure(state=state)
-        self.start_button.configure(state=state)
+        self.start_button.configure(state=state, text="开始转换" if enabled else "转换中…")
         self.output_name_entry.configure(state=state)
         self.type_box.configure(state="readonly" if enabled else "disabled")
 
@@ -305,10 +354,10 @@ def build_app() -> tk.Tk:
     # 禁用 ttkbootstrap 的彩色圆点图标，保留 Tkinter 原生默认程序图标。
     root = ttk.Window(themename="flatly", iconphoto=None)
     root.title("模板转换工具")
-    root.minsize(680, 400)
-    root.resizable(True, False)
+    root.minsize(680, 460)
+    root.resizable(True, True)
     TemplateConverterApp(root)
-    _center_window(root, 760, 400)
+    _center_window(root, 760, 560)
     return root
 
 
