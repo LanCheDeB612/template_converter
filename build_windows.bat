@@ -37,7 +37,7 @@ uv run pyinstaller ^
     --clean ^
     --onefile ^
     --windowed ^
-    --name TemplateConverter ^
+    --name 模板转换工具 ^
     --paths src ^
     --collect-all ttkbootstrap ^
     --add-data "resources\templates\DDS通信矩阵.xlsx:resources\templates" ^
@@ -45,13 +45,16 @@ uv run pyinstaller ^
     main.py
 if errorlevel 1 goto :failed
 
-if not exist "dist\TemplateConverter.exe" (
-    echo [错误] PyInstaller 未报告错误，但未生成 dist\TemplateConverter.exe。
+if not exist "dist\模板转换工具.exe" (
+    echo [错误] PyInstaller 未报告错误，但未生成 dist\模板转换工具.exe。
     goto :failed
 )
 
+rem 新的中文名称生成成功后再删除旧名称，避免打包失败时丢失原有可执行文件。
+if exist "dist\TemplateConverter.exe" del /q "dist\TemplateConverter.exe"
+
 echo.
-echo 打包完成：%CD%\dist\TemplateConverter.exe
+echo 打包完成：%CD%\dist\模板转换工具.exe
 echo 请在 Windows 上分别执行一次 DDS 和路由转换进行验收。
 pause
 exit /b 0
