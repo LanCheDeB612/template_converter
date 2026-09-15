@@ -28,13 +28,21 @@ def available_output_path(
     input_file: Path,
     output_directory: Path,
     output_filename: str | None = None,
+    *,
+    template_type: str = "DDS",
 ) -> Path:
     """结果文件已存在时增加数字后缀，避免覆盖人工补填过的文件。"""
     custom_filename = normalise_output_filename(output_filename)
+    suffixes = {
+        "DDS": "DDS通信矩阵",
+        "SOME/IP": "SOMEIP通信矩阵",
+        "路由": "路由输入模板",
+    }
+    output_suffix = suffixes.get(template_type, f"{template_type}转换结果")
     base_name = (
         Path(custom_filename).stem
         if custom_filename is not None
-        else f"{input_file.stem}_DDS通信矩阵"
+        else f"{input_file.stem}_{output_suffix}"
     )
     candidate = output_directory / f"{base_name}.xlsx"
     index = 1

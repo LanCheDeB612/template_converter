@@ -13,6 +13,11 @@ from converter_core.output import normalise_output_filename
 from converter_gui.worker import ConversionWorker, WorkerMessage
 
 TEMPLATE_TYPES = ("DDS", "SOME/IP", "路由")
+OUTPUT_SUFFIXES = {
+    "DDS": "DDS通信矩阵",
+    "SOME/IP": "SOMEIP通信矩阵",
+    "路由": "路由输入模板",
+}
 
 
 class TemplateConverterApp:
@@ -24,6 +29,7 @@ class TemplateConverterApp:
         self.input_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.output_name = tk.StringVar()
+        self._automatic_output_name: str | None = None
         self.worker_messages: Queue[WorkerMessage] = Queue()
         self.worker = ConversionWorker(self.worker_messages)
 
@@ -171,7 +177,11 @@ class TemplateConverterApp:
         self.log_text.tag_configure("success", foreground="#148f77")
 
     def _on_type_selected(self, _event: tk.Event) -> None:
-        """选择模板类型后清除只读下拉框的文字选中背景。"""
+        """选择模板类型后更新自动文件名，并清除只读下拉框的选中背景。"""
+        if self.input_path.get():
+            current_name = self.output_name.get().strip()
+            if not current_name or current_name == self._automatic_output_name:
+                self._set_automatic_output_name(Path(self.input_path.get()))
         self.root.after_idle(self._clear_type_selection)
 
     def _clear_type_selection(self) -> None:
@@ -192,10 +202,18 @@ class TemplateConverterApp:
             self.input_path.set(str(selected_path))
             # 默认把结果保存在输入文件旁边，用户仍可通过“选择目录”覆盖。
             self.output_path.set(str(selected_path.parent))
-            if not self.output_name.get().strip():
-                self.output_name.set(f"{selected_path.stem}_DDS通信矩阵.xlsx")
+            current_name = self.output_name.get().strip()
+            if not current_name or current_name == self._automatic_output_name:
+                self._set_automatic_output_name(selected_path)
             self._append_log(f"已选择输入文件：{selected_path}")
             self._append_log(f"已自动设置输出目录：{selected_path.parent}")
+
+    def _set_automatic_output_name(self, input_file: Path) -> None:
+        """按当前模板类型生成默认名称，不覆盖用户手工填写的名称。"""
+        suffix = OUTPUT_SUFFIXES[self.template_type.get()]
+        automatic_name = f"{input_file.stem}_{suffix}.xlsx"
+        self.output_name.set(automatic_name)
+        self._automatic_output_name = automatic_name
 
     def _browse_output(self) -> None:
         """选择转换结果的保存目录。"""
@@ -234,7 +252,7 @@ class TemplateConverterApp:
             self.output_name_entry.focus_set()
             return
 
-        if selected_type != "DDS":
+        if selected_type == "SOME/IP":
             messagebox.showinfo(
                 "功能开发中",
                 f"{selected_type} 转换功能尚未实现。",
@@ -277,14 +295,18 @@ class TemplateConverterApp:
         """展示转换数量、输出路径或能够定位到客户 Sheet 的问题。"""
         self._set_controls_enabled(True)
         if result.success and result.output_file is not None:
-            self._append_log(
-                f"转换完成：节点 {result.node_count}，通信记录 {result.matrix_count}",
-                "success",
-            )
+            if result.counts:
+                summary = "，".join(f"{item.label} {item.value}" for item in result.counts)
+            else:
+                summary = f"节点 {result.node_count}，通信记录 {result.matrix_count}"
+            for issue in result.issues:
+                if issue.level == "warning":
+                    self._append_log(issue.message, "warning")
+            self._append_log(f"转换完成：{summary}", "success")
             self._append_log(f"输出文件：{result.output_file}", "success")
             messagebox.showinfo(
                 "转换完成",
-                f"已生成：\n{result.output_file}\n\n节点：{result.node_count}\n通信记录：{result.matrix_count}",
+                f"已生成：\n{result.output_file}\n\n{summary}",
                 parent=self.root,
             )
             return
