@@ -24,9 +24,19 @@ from converter_core.converters.routing import (
     build_conversion_data as build_routing_conversion_data,
     read_customer_workbook as read_routing_workbook,
 )
+from converter_core.converters.someip import (
+    SomeipConversionData,
+    SomeipConversionError,
+    build_conversion_data as build_someip_conversion_data,
+    read_customer_workbook as read_someip_workbook,
+)
 from converter_core.excel_io import MATRIX_SHEET, NODE_SHEET, write_dds_template_copy
 from converter_core.output import available_output_path
-from converter_core.resources import dds_template_path, routing_template_path
+from converter_core.resources import (
+    dds_template_path,
+    routing_template_path,
+    someip_template_path,
+)
 from converter_core.routing_excel_io import (
     CAN_PDU_HEADERS,
     CAN_PDU_SHEET,
@@ -37,6 +47,13 @@ from converter_core.routing_excel_io import (
     SIGNAL_HEADERS,
     SIGNAL_SHEET,
     write_routing_template_copy,
+)
+from converter_core.someip_excel_io import (
+    BEHAVIOR_SHEET,
+    INTERFACE_SHEET,
+    NODE_SHEET as SOMEIP_NODE_SHEET,
+    SOMEIP_HEADERS,
+    write_someip_template_copy,
 )
 
 ProgressCallback = Callable[[int, str], None]
@@ -57,6 +74,8 @@ class ConversionService:
 
         if request.template_type == "DDS":
             return self._convert_dds(request, progress)
+        if request.template_type == "SOME/IP":
+            return self._convert_someip(request, progress)
         return self._convert_routing(request, progress)
 
     def _convert_dds(
@@ -191,9 +210,69 @@ class ConversionService:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
+    def _convert_someip(
+        self,
+        request: ConversionRequest,
+        progress: ProgressCallback | None,
+    ) -> ConversionResult:
+        """执行 SOME/IP 读取、块级转换、模板写入和结果核对。"""
+        notify = progress or (lambda _value, _message: None)
+        temporary_path: Path | None = None
+        try:
+            notify(10, "正在读取客户 SOME/IP 模板")
+            source = read_someip_workbook(request.input_file)
+            notify(35, "正在关联服务、事件组、客户端和接口定义")
+            data = build_someip_conversion_data(source)
+
+            template = someip_template_path()
+            if not template.is_file():
+                return ConversionResult(
+                    success=False,
+                    issues=(ConversionIssue(level="error", message=f"找不到标准模板：{template}"),),
+                )
+            output_file = available_output_path(
+                request.input_file,
+                request.output_directory,
+                request.output_filename,
+                template_type="SOME/IP",
+            )
+            with NamedTemporaryFile(
+                prefix=".someip-converting-",
+                suffix=".xlsx",
+                dir=request.output_directory,
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+
+            notify(60, "正在复制标准模板并写入 SOME/IP 数据")
+            write_someip_template_copy(template, temporary_path, data)
+            notify(85, "正在重新打开并检查 SOME/IP 转换结果")
+            self._verify_someip_output(temporary_path, data)
+            temporary_path.replace(output_file)
+            temporary_path = None
+            notify(100, "SOME/IP 转换完成")
+            return ConversionResult(
+                success=True,
+                output_file=output_file,
+                counts=(
+                    ConversionCount(label="通信行为", value=len(data.behavior_rows)),
+                    ConversionCount(label="事件和方法", value=len(data.interface_rows)),
+                ),
+            )
+        except SomeipConversionError as error:
+            return ConversionResult(success=False, issues=error.issues)
+        except (BadZipFile, InvalidFileException, OSError, ParseError, ValueError) as error:
+            return ConversionResult(
+                success=False,
+                issues=(ConversionIssue(level="error", message=f"SOME/IP 转换失败：{error}"),),
+            )
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
     @staticmethod
     def _validate_request(request: ConversionRequest) -> ConversionIssue | None:
-        if request.template_type not in {"DDS", "路由"}:
+        if request.template_type not in {"DDS", "SOME/IP", "路由"}:
             return ConversionIssue(level="error", message=f"{request.template_type} 转换功能尚未实现。")
         if not request.input_file.is_file() or request.input_file.suffix.casefold() != ".xlsx":
             return ConversionIssue(level="error", message="请选择有效的 .xlsx 输入文件。")
@@ -295,5 +374,56 @@ class ConversionService:
                 or route_type_validations[0].formula1 != '"Event,Cycle,Always,Never"'
             ):
                 raise ValueError("ETH-PDU路由的 pdu_routing_type 下拉选项不完整。")
+        finally:
+            workbook.close()
+
+    @staticmethod
+    def _verify_someip_output(path: Path, data: SomeipConversionData) -> None:
+        """重新打开输出，核对节点、关联公式和两类业务数量。"""
+        workbook = load_workbook(path, read_only=False, data_only=False)
+        try:
+            if workbook.sheetnames != list(SOMEIP_HEADERS):
+                raise ValueError("SOME/IP 输出文件的 Sheet 结构发生变化。")
+            node_sheet = workbook[SOMEIP_NODE_SHEET]
+            actual_node_names = tuple(
+                node_sheet.cell(row, 1).value
+                for row in range(2, node_sheet.max_row + 1)
+                if node_sheet.cell(row, 1).value is not None
+            )
+            if actual_node_names != data.node_names:
+                raise ValueError("节点配置中的节点名称与客户 SOME/IP 模板不一致。")
+            if any(
+                node_sheet.cell(row, column).value is not None
+                for row in range(2, len(data.node_names) + 2)
+                for column in range(2, len(SOMEIP_HEADERS[SOMEIP_NODE_SHEET]) + 1)
+            ):
+                raise ValueError("节点配置除节点名称外应保持空白供用户手工填写。")
+
+            behavior_sheet = workbook[BEHAVIOR_SHEET]
+            if any(
+                behavior_sheet.cell(row, column).data_type != "f"
+                for row in range(2, len(data.behavior_rows) + 2)
+                for column in (15, 23)
+            ):
+                raise ValueError("通信行为的 Server IP 或 Client IP 未按节点配置生成公式。")
+
+            expected_counts = (len(data.behavior_rows), len(data.interface_rows))
+            actual_counts = tuple(
+                sum(
+                    1
+                    for row in range(2, workbook[sheet_name].max_row + 1)
+                    if any(
+                        workbook[sheet_name].cell(row, column).value is not None
+                        for column in range(1, len(SOMEIP_HEADERS[sheet_name]) + 1)
+                    )
+                )
+                for sheet_name in (BEHAVIOR_SHEET, INTERFACE_SHEET)
+            )
+            if actual_counts != expected_counts:
+                raise ValueError(
+                    "SOME/IP 输出重新打开后的记录数不一致："
+                    f"通信行为 {actual_counts[0]}/{expected_counts[0]}，"
+                    f"事件和方法 {actual_counts[1]}/{expected_counts[1]}。"
+                )
         finally:
             workbook.close()

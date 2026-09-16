@@ -21,6 +21,11 @@ if not exist "resources\templates\DDS通信矩阵.xlsx" (
     goto :failed
 )
 
+if not exist "resources\templates\SOMEIP通信矩阵模板.xlsx" (
+    echo [错误] 缺少 SOME/IP 标准模板：resources\templates\SOMEIP通信矩阵模板.xlsx
+    goto :failed
+)
+
 if not exist "resources\templates\路由输入模板.xlsx" (
     echo [错误] 缺少路由标准模板：resources\templates\路由输入模板.xlsx
     goto :failed
@@ -31,7 +36,7 @@ uv sync --locked
 if errorlevel 1 goto :failed
 
 echo [2/2] 正在生成 Windows 单文件程序...
-rem 两个模板必须保持 resources\templates 目录结构，程序解压后才能按相同路径找到它们。
+rem 三个模板必须保持 resources\templates 目录结构，程序解压后才能按相同路径找到它们。
 uv run pyinstaller ^
     --noconfirm ^
     --clean ^
@@ -41,6 +46,7 @@ uv run pyinstaller ^
     --paths src ^
     --collect-all ttkbootstrap ^
     --add-data "resources\templates\DDS通信矩阵.xlsx:resources\templates" ^
+    --add-data "resources\templates\SOMEIP通信矩阵模板.xlsx:resources\templates" ^
     --add-data "resources\templates\路由输入模板.xlsx:resources\templates" ^
     main.py
 if errorlevel 1 goto :failed
@@ -55,7 +61,7 @@ if exist "dist\TemplateConverter.exe" del /q "dist\TemplateConverter.exe"
 
 echo.
 echo 打包完成：%CD%\dist\模板转换工具.exe
-echo 请在 Windows 上分别执行一次 DDS 和路由转换进行验收。
+echo 请在 Windows 上分别执行一次 DDS、SOME/IP 和路由转换进行验收。
 pause
 exit /b 0
 

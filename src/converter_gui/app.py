@@ -252,14 +252,6 @@ class TemplateConverterApp:
             self.output_name_entry.focus_set()
             return
 
-        if selected_type == "SOME/IP":
-            messagebox.showinfo(
-                "功能开发中",
-                f"{selected_type} 转换功能尚未实现。",
-                parent=self.root,
-            )
-            return
-
         self._clear_log()
         self._append_log(f"开始转换：{input_file.name}")
         self._set_controls_enabled(False)

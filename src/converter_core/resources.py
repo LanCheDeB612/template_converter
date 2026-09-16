@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 DDS_TEMPLATE_NAME = "DDS通信矩阵.xlsx"
+SOMEIP_TEMPLATE_NAME = "SOMEIP通信矩阵模板.xlsx"
 ROUTING_TEMPLATE_NAME = "路由输入模板.xlsx"
 
 
@@ -19,6 +20,11 @@ def _template_path(template_name: str) -> Path:
 def dds_template_path() -> Path:
     """返回随程序发布的 DDS 标准输出模板路径。"""
     return _template_path(DDS_TEMPLATE_NAME)
+
+
+def someip_template_path() -> Path:
+    """返回随程序发布的 SOME/IP 标准输出模板路径。"""
+    return _template_path(SOMEIP_TEMPLATE_NAME)
 
 
 def routing_template_path() -> Path:
